@@ -1,11 +1,15 @@
 import { Router } from "express";
-import { db, dailyWorkTable, internalTasksTable, taskReassignmentsTable, usersTable, teamsTable } from "@workspace/db";
+import { db, dailyWorkTable, internalTasksTable, taskReassignmentsTable, usersTable, teamsTable, portalNotificationsTable } from "@workspace/db";
 import { and, eq, inArray } from "drizzle-orm";
 import { createPortalNotification, notifyRoleScopedEvent } from "./notifications";
 import { sessions } from "./auth";
 import { logTaskDeletion } from "../lib/audit";
+import multer from "multer";
+import { z } from "zod";
+import { parseExcelFile, validateImportData, excelDateToString, mapHeaders, normalizePercentage } from "../lib/import-helper";
 
 const router = Router();
+const upload = multer({ storage: multer.memoryStorage() });
 
 const optionalDate = (value: unknown) => typeof value === "string" && value.trim() === "" ? null : value;
 
@@ -641,6 +645,184 @@ router.delete("/tasks/:id", async (req, res) => {
   });
   await notifyTaskChange(task, "deleted");
   res.status(204).send();
+});
+
+// Import endpoint for bulk task upload
+router.post("/tasks/import", upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+
+    // Parse Excel/CSV file
+    const rawData = parseExcelFile(req.file.buffer);
+    
+    if (!rawData || rawData.length === 0) {
+      return res.status(400).json({ error: "File is empty or invalid" });
+    }
+
+    // Define header mappings (handles different column name variations)
+    const headerMapping = {
+      taskName: ['Task Name', 'taskName', 'task_name', 'name', 'Task', 'Tasks', 'Task Description', 'Task Details', 'Activity', 'Activity Name', 'Action', 'Work', 'Work Details', 'Task / Activity', 'Task/Activity', 'Description', 'Particulars'],
+      taskCode: ['Task Code', 'taskCode', 'task_code', 'code', 'Task ID', 'Task No', 'S N', 'S.No', 'S.No.', 'Sl No', 'Serial No'],
+      status: ['Status', 'status'],
+      priority: ['Priority', 'priority'],
+      how: ['How', 'how', 'methodology', 'method'],
+      who: ['Who', 'who', 'assignee', 'assigned_to'],
+      assignedBy: ['Assigned By', 'assignedBy', 'assigned_by', 'assigner'],
+      plannedStartDate: ['Planned Start Date', 'Plan S Date', 'plannedStartDate', 'planned_start_date', 'start_date', 'Start Date', 'Start'],
+      plannedEndDate: ['Planned End Date', 'Plan E Date', 'plannedEndDate', 'planned_end_date', 'end_date', 'End Date', 'Due Date', 'Target Date', 'End'],
+      actualStartDate: ['Actual Start Date', 'Actual S Date', 'actualStartDate', 'actual_start_date'],
+      actualEndDate: ['Actual End Date', 'Actual E Date', 'actualEndDate', 'actual_end_date'],
+      completionPct: ['Completion %', 'Comp %', 'Progress %', 'completionPct', 'completion_pct', 'progress'],
+      dependency: ['Dependency', 'dependency', 'dependencies'],
+      remarks: ['Remarks', 'remarks', 'notes', 'comments'],
+      etc: ['ETC', 'etc', 'estimate'],
+    };
+
+    // Map headers for each row
+    const mappedData = rawData.map(row => mapHeaders(row, headerMapping));
+
+    // Pre-filter: Remove rows without task name (required field)
+    const dataWithTaskNames = mappedData.filter(row => {
+      const taskName = row.taskName;
+      return taskName && typeof taskName === 'string' && taskName.trim().length > 0;
+    });
+
+    if (dataWithTaskNames.length === 0) {
+      return res.status(400).json({ 
+        error: "No valid tasks found", 
+        message: "All rows are missing task names. Please ensure your file has a 'Task Name' column with values." 
+      });
+    }
+
+    if (dataWithTaskNames.length < mappedData.length) {
+      console.log(`Filtered out ${mappedData.length - dataWithTaskNames.length} rows without task names`);
+    }
+
+    // Define validation schema with more helpful error messages
+    const taskImportSchema = z.object({
+      taskName: z.string()
+        .min(1, "Task name is required")
+        .refine(val => val && val.trim().length > 0, "Task name cannot be empty"),
+      taskCode: z.string().optional(),
+      status: z.string().optional().transform(val => {
+        // Convert to lowercase and handle common variations
+        if (!val) return 'yts';
+        const normalized = val.toLowerCase().trim();
+        const statusMap: Record<string, string> = {
+          'yts': 'yts',
+          'yet to start': 'yts',
+          'not started': 'yts',
+          'wip': 'wip',
+          'work in progress': 'wip',
+          'in progress': 'wip',
+          'completed': 'completed',
+          'complete': 'completed',
+          'done': 'completed',
+          'hold': 'hold',
+          'holding': 'hold',
+          'on hold': 'hold',
+          'cancelled': 'cancelled',
+          'canceled': 'cancelled',
+          'cancel': 'cancelled',
+        };
+        return statusMap[normalized] || 'yts';
+      }).pipe(z.enum(['yts', 'wip', 'completed', 'hold', 'cancelled'])),
+      priority: z.string().optional().transform(val => {
+        // Convert to lowercase and handle common variations
+        if (!val) return 'medium';
+        const normalized = val.toLowerCase().trim();
+        const priorityMap: Record<string, string> = {
+          'low': 'low',
+          'l': 'low',
+          'medium': 'medium',
+          'med': 'medium',
+          'm': 'medium',
+          'high': 'high',
+          'h': 'high',
+        };
+        return priorityMap[normalized] || 'medium';
+      }).pipe(z.enum(['low', 'medium', 'high'])),
+      how: z.string().optional(),
+      who: z.string().optional(),
+      assignedBy: z.string().optional(),
+      plannedStartDate: z.string().optional().transform(val => excelDateToString(val)),
+      plannedEndDate: z.string().optional().transform(val => excelDateToString(val)),
+      actualStartDate: z.string().optional().transform(val => excelDateToString(val)),
+      actualEndDate: z.string().optional().transform(val => excelDateToString(val)),
+      completionPct: z.preprocess(normalizePercentage, z.coerce.number().min(0).max(100)).default(0),
+      dependency: z.string().optional(),
+      remarks: z.string().optional(),
+      etc: z.string().optional(),
+    });
+
+    // Validate data
+    const validationResult = validateImportData(dataWithTaskNames, taskImportSchema);
+
+    if (!validationResult.success) {
+      return res.status(400).json({
+        error: "Validation failed",
+        details: validationResult.errors,
+        summary: {
+          totalRows: validationResult.totalRows,
+          validRows: validationResult.validRows,
+          invalidRows: validationResult.invalidRows
+        }
+      });
+    }
+
+    // Employee imports must always belong to the importing account. The
+    // submitted values support authorized assignment flows, while the session
+    // fallback prevents an imported file from becoming unassigned.
+    const session = getSession(req);
+    const userId = req.body.userId ? parseInt(req.body.userId) : session?.userId ?? null;
+    const teamId = req.body.teamId ? parseInt(req.body.teamId) : null;
+
+    // Insert valid records
+    const insertedTasks = await db.transaction(async (tx) => {
+      const results = [];
+      for (const record of validationResult.validRecords) {
+        const [task] = await tx.insert(internalTasksTable).values({
+          ...record,
+          userId: userId,
+          teamId: teamId,
+          approvalStatus: 'pending',
+          // An import made from a user's own portal is already accepted by
+          // that user. Otherwise the record would be hidden by My Tasks,
+          // which intentionally displays accepted assignments only.
+          assignmentStatus: 'accepted',
+          assignedAt: userId ? new Date() : null,
+        }).returning();
+        
+        // Sync to daily work
+        await syncDailyWorkFromTask(tx, task);
+        results.push(task);
+      }
+      return results;
+    });
+
+    // Enrich and return results
+    const enrichedTasks = await Promise.all(insertedTasks.map(enrichTask));
+
+    res.json({
+      success: true,
+      imported: enrichedTasks.length,
+      tasks: enrichedTasks,
+      summary: {
+        totalRows: validationResult.totalRows,
+        successfulImports: enrichedTasks.length,
+        failedImports: 0
+      }
+    });
+
+  } catch (error) {
+    console.error('Import error:', error);
+    res.status(500).json({ 
+      error: "Import failed", 
+      message: error instanceof Error ? error.message : "Unknown error" 
+    });
+  }
 });
 
 export default router;

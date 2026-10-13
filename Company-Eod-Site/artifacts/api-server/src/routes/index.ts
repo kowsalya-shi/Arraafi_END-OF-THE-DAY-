@@ -9,6 +9,8 @@ import dailyWorkRouter from "./dailyWork";
 import trainingRouter from "./training";
 import dashboardRouter from "./dashboard";
 import notificationsRouter from "./notifications";
+import notificationSettingsRouter from "./notificationSettings";
+import systemSettingsRouter from "./systemSettings";
 import auditRouter from "./audit";
 import misRouter from "./mis";
 
@@ -24,6 +26,8 @@ router.use(dailyWorkRouter);
 router.use(trainingRouter);
 router.use(dashboardRouter);
 router.use(notificationsRouter);
+router.use(notificationSettingsRouter);
+router.use(systemSettingsRouter);
 router.use(auditRouter);
 router.use(misRouter);
 

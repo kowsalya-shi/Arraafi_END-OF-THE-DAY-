@@ -4,8 +4,12 @@ import { eq } from "drizzle-orm";
 import { createPortalNotification, notifyEmployeeRecordDeleted } from "./notifications";
 import { sessions } from "./auth";
 import { logDailyWorkDeletion } from "../lib/audit";
+import multer from "multer";
+import { z } from "zod";
+import { parseExcelFile, validateImportData, excelDateToString, mapHeaders, normalizePercentage } from "../lib/import-helper";
 
 const router = Router();
+const upload = multer({ storage: multer.memoryStorage() });
 
 function getSession(req: import("express").Request) {
   const authHeader = req.headers.authorization;
@@ -329,6 +333,145 @@ router.delete("/daily-work/:id", async (req, res) => {
   });
   await notifyEmployeeRecordDeleted(item.userId, item.teamId, "Daily Work", item.action, item.id);
   res.status(204).send();
+});
+
+// Import endpoint for bulk daily work upload
+router.post("/daily-work/import", upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+
+    // Parse Excel/CSV file
+    const rawData = parseExcelFile(req.file.buffer);
+    
+    if (!rawData || rawData.length === 0) {
+      return res.status(400).json({ error: "File is empty or invalid" });
+    }
+
+    // Define header mappings
+    const headerMapping = {
+      action: ['Action', 'Actions', 'action', 'task', 'work', 'activity'],
+      date: ['Date', 'When', 'date', 'work_date'],
+      status: ['Status', 'status'],
+      how: ['How', 'how', 'methodology', 'method'],
+      who: ['Who', 'who', 'assignee'],
+      assignedBy: ['Assigned By', 'assignedBy', 'assigned_by'],
+      startDate: ['Start Date', 'startDate', 'start_date'],
+      completionDate: ['Completion Date', 'completionDate', 'completion_date', 'end_date'],
+      completionPct: ['Completion %', 'Comp %', 'Progress %', 'completionPct', 'completion_pct', 'progress'],
+      remarks: ['Remarks', 'remarks', 'notes', 'comments'],
+    };
+
+    // Map headers for each row
+    const mappedData = rawData.map(row => mapHeaders(row, headerMapping));
+
+    // Pre-filter: Remove rows without action (required field)
+    const dataWithActions = mappedData.filter(row => {
+      const action = row.action;
+      return action && typeof action === 'string' && action.trim().length > 0;
+    });
+
+    if (dataWithActions.length === 0) {
+      return res.status(400).json({ 
+        error: "No valid daily work found", 
+        message: "All rows are missing actions. Please ensure your file has an 'Action' column with values." 
+      });
+    }
+
+    if (dataWithActions.length < mappedData.length) {
+      console.log(`Filtered out ${mappedData.length - dataWithActions.length} rows without actions`);
+    }
+
+    // Define validation schema
+    const dailyWorkImportSchema = z.object({
+      action: z.string().min(1, "Action is required"),
+      date: z.string().min(1, "Date is required").transform(val => excelDateToString(val) || val),
+      status: z.string().optional().transform(val => {
+        if (!val) return 'yts';
+        const normalized = val.toLowerCase().trim();
+        const statusMap: Record<string, string> = {
+          'yts': 'yts',
+          'yet to start': 'yts',
+          'not started': 'yts',
+          'wip': 'wip',
+          'work in progress': 'wip',
+          'in progress': 'wip',
+          'completed': 'completed',
+          'complete': 'completed',
+          'done': 'completed',
+        };
+        return statusMap[normalized] || 'yts';
+      }).pipe(z.enum(['yts', 'wip', 'completed'])),
+      how: z.string().optional(),
+      who: z.string().optional(),
+      assignedBy: z.string().optional(),
+      startDate: z.string().optional().transform(val => excelDateToString(val)),
+      completionDate: z.string().optional().transform(val => excelDateToString(val)),
+      completionPct: z.preprocess(normalizePercentage, z.coerce.number().min(0).max(100)).default(0),
+      remarks: z.string().optional(),
+    });
+
+    // Validate data
+    const validationResult = validateImportData(dataWithActions, dailyWorkImportSchema);
+
+    if (!validationResult.success) {
+      return res.status(400).json({
+        error: "Validation failed",
+        details: validationResult.errors,
+        summary: {
+          totalRows: validationResult.totalRows,
+          validRows: validationResult.validRows,
+          invalidRows: validationResult.invalidRows
+        }
+      });
+    }
+
+    // Use the importing account when an explicit employee is not supplied so
+    // the imported work is visible in that person's own portal.
+    const session = getSession(req);
+    const userId = req.body.userId ? parseInt(req.body.userId) : session?.userId ?? null;
+    const teamId = req.body.teamId ? parseInt(req.body.teamId) : null;
+
+    // Insert valid records
+    const insertedItems = await db.transaction(async (tx) => {
+      const results = [];
+      for (const record of validationResult.validRecords) {
+        const [dailyWork] = await tx.insert(dailyWorkTable).values({
+          ...record,
+          userId: userId,
+          teamId: teamId,
+          approvalStatus: 'pending',
+        }).returning();
+        
+        // Sync to task
+        await syncTaskFromDailyWork(tx, dailyWork);
+        results.push(dailyWork);
+      }
+      return results;
+    });
+
+    // Enrich and return results
+    const enrichedItems = await Promise.all(insertedItems.map(enrichWork));
+
+    res.json({
+      success: true,
+      imported: enrichedItems.length,
+      dailyWork: enrichedItems,
+      summary: {
+        totalRows: validationResult.totalRows,
+        successfulImports: enrichedItems.length,
+        failedImports: 0
+      }
+    });
+
+  } catch (error) {
+    console.error('Import error:', error);
+    res.status(500).json({ 
+      error: "Import failed", 
+      message: error instanceof Error ? error.message : "Unknown error" 
+    });
+  }
 });
 
 export default router;

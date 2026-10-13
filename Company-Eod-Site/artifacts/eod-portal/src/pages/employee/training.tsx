@@ -24,6 +24,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { useToast } from "@/hooks/use-toast";
 import { Download, Plus, Edit2, Trash2, Filter } from "lucide-react";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { ImportDialog } from "@/components/import-dialog";
 
 const trainingSchema = z.object({
   topic: z.string().min(1, "Topic is required"),
@@ -289,6 +290,41 @@ export default function EmployeeTraining() {
           <Button variant="outline" onClick={handleExport}>
             <Download className="mr-2 h-4 w-4" /> Export
           </Button>
+          <ImportDialog
+            title="Import Training Records"
+            description="Upload an Excel or CSV file to import multiple training records at once"
+            importEndpoint="/training/import"
+            sampleData={[
+              {
+                "Topic": "React Advanced Patterns",
+                "Category": "Frontend Development",
+                "Trainer": "John Smith",
+                "Start Date": today,
+                "End Date": "",
+                "Status": "wip",
+                "Progress %": "60",
+                "Remarks": "Learning hooks and context"
+              },
+              {
+                "Topic": "Database Optimization",
+                "Category": "Backend Development",
+                "Trainer": "Jane Doe",
+                "Start Date": "2026-09-01",
+                "End Date": "2026-09-07",
+                "Status": "completed",
+                "Progress %": "100",
+                "Remarks": "Completed with certification"
+              }
+            ]}
+            sampleFilename="training_import_template.xlsx"
+            onImportSuccess={() => {
+              queryClient.invalidateQueries({ queryKey: getListTrainingQueryKey() });
+            }}
+            additionalData={{
+              userId: user?.id,
+              teamId: user?.teamId
+            }}
+          />
           <Dialog open={isCreateOpen} onOpenChange={(open) => {
             if (open) {
               form.reset();

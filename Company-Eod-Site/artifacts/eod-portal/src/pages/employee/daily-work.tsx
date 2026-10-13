@@ -26,6 +26,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { useToast } from "@/hooks/use-toast";
 import { Download, Plus, Edit2, Trash2, Filter, Copy, Upload, FileDown } from "lucide-react";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { ImportDialog } from "@/components/import-dialog";
 
 const dailyWorkSchema = z.object({
   action: z.string().min(1, "Action is required"),
@@ -64,7 +65,10 @@ export default function EmployeeDailyWork() {
   const queryClient = useQueryClient();
   const today = format(new Date(), "yyyy-MM-dd");
   
-  const [dateFilter, setDateFilter] = useState<string>(today);
+  // Show all of the employee's imported work by default. Import files often
+  // contain historical dates, which should not disappear behind a today-only
+  // filter immediately after import.
+  const [dateFilter, setDateFilter] = useState<string>("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isEditOpen, setIsEditOpen] = useState(false);
@@ -399,15 +403,45 @@ export default function EmployeeDailyWork() {
           <Button variant="outline" onClick={handleDownloadTemplate}>
             <FileDown className="mr-2 h-4 w-4" /> Template
           </Button>
-          <Button variant="outline" onClick={() => document.getElementById('import-daily-work')?.click()}>
-            <Upload className="mr-2 h-4 w-4" /> Import
-          </Button>
-          <input
-            id="import-daily-work"
-            type="file"
-            accept=".csv"
-            className="hidden"
-            onChange={handleImport}
+          <ImportDialog
+            title="Import Daily Work"
+            description="Upload an Excel or CSV file to import multiple daily work entries at once"
+            importEndpoint="/daily-work/import"
+            sampleData={[
+              {
+                "Date": today,
+                "Action": "Complete project documentation",
+                "How": "Review and update all sections",
+                "Who": user?.name || "Employee Name",
+                "Assigned By": "Team Lead",
+                "Start Date": today,
+                "Completion Date": "",
+                "Status": "wip",
+                "Completion %": "50",
+                "Remarks": "In progress"
+              },
+              {
+                "Date": today,
+                "Action": "Team meeting attendance",
+                "How": "Participate and take notes",
+                "Who": user?.name || "Employee Name",
+                "Assigned By": "Manager",
+                "Start Date": today,
+                "Completion Date": today,
+                "Status": "completed",
+                "Completion %": "100",
+                "Remarks": "Completed successfully"
+              }
+            ]}
+            sampleFilename="daily_work_import_template.xlsx"
+            onImportSuccess={() => {
+              queryClient.invalidateQueries({ queryKey: getListDailyWorkQueryKey() });
+              queryClient.invalidateQueries({ queryKey: getListTasksQueryKey() });
+            }}
+            additionalData={{
+              userId: user?.id,
+              teamId: user?.teamId
+            }}
           />
           <Button variant="outline" onClick={handleExport}>
             <Download className="mr-2 h-4 w-4" /> Export

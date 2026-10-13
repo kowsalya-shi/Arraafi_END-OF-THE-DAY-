@@ -7,6 +7,8 @@ import { MainLayout } from "@/components/layout/MainLayout";
 import NotFound from "@/pages/not-found";
 import Login from "@/pages/login";
 import PortalNotificationsPage from "@/pages/shared/notifications";
+import NotificationSettingsPage from "@/pages/employee/notification-settings";
+import CEONotificationSettingsPage from "@/pages/ceo/notification-settings";
 
 // Employee
 import EmployeeDashboard from "@/pages/employee/dashboard";
@@ -121,6 +123,7 @@ function Router() {
       <ProtectedRoute path="/employee/daily-work" component={EmployeeDailyWork} allowedRoles={["employee"]} />
       <ProtectedRoute path="/employee/training" component={EmployeeTraining} allowedRoles={["employee"]} />
       <ProtectedRoute path="/employee/notifications" component={PortalNotificationsPage} allowedRoles={["employee"]} />
+      <ProtectedRoute path="/employee/notification-settings" component={NotificationSettingsPage} allowedRoles={["employee"]} />
 
       {/* TL Routes */}
       <ProtectedRoute path="/tl/dashboard" component={TLDashboard} allowedRoles={["tl"]} />
@@ -176,6 +179,7 @@ function Router() {
       <ProtectedRoute path="/ceo/users" component={CEOUsers} allowedRoles={["ceo"]} />
       <ProtectedRoute path="/ceo/teams" component={CEOTeams} allowedRoles={["ceo"]} />
       <ProtectedRoute path="/ceo/notifications" component={CEONotifications} allowedRoles={["ceo"]} />
+      <ProtectedRoute path="/ceo/notification-settings" component={CEONotificationSettingsPage} allowedRoles={["ceo"]} />
       <ProtectedRoute path="/ceo/activity-audit" component={ActivityAudit} allowedRoles={["ceo"]} />
       <ProtectedRoute path="/ceo/audit" component={AuditPage} allowedRoles={["ceo"]} />
       <ProtectedRoute path="/ceo/mis" component={ManagerMIS} allowedRoles={["ceo"]} />

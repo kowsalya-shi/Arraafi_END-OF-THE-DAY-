@@ -24,6 +24,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { useToast } from "@/hooks/use-toast";
 import { Download, Plus, Edit2, Trash2, Search, Filter } from "lucide-react";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { ImportDialog } from "@/components/import-dialog";
 
 const taskSchema = z.object({
   taskCode: z.string().optional(),
@@ -345,6 +346,55 @@ export default function EmployeeTasks() {
           <Button variant="outline" onClick={handleExport}>
             <Download className="mr-2 h-4 w-4" /> Export
           </Button>
+          <ImportDialog
+            title="Import Tasks"
+            description="Upload an Excel or CSV file to import multiple tasks at once"
+            importEndpoint="/tasks/import"
+            sampleData={[
+              {
+                "Task Name": "Example Task 1",
+                "Task Code": "TASK-001",
+                "Status": "yts",
+                "Priority": "high",
+                "How": "Follow the standard procedure",
+                "Who": user?.name || "Employee Name",
+                "Assigned By": "Manager Name",
+                "Planned Start Date": "2026-09-08",
+                "Planned End Date": "2026-09-15",
+                "Actual Start Date": "",
+                "Actual End Date": "",
+                "Completion %": "0",
+                "Dependency": "",
+                "Remarks": "Important task",
+                "ETC": ""
+              },
+              {
+                "Task Name": "Example Task 2",
+                "Task Code": "TASK-002",
+                "Status": "wip",
+                "Priority": "medium",
+                "How": "Research and implement",
+                "Who": user?.name || "Employee Name",
+                "Assigned By": "Team Lead",
+                "Planned Start Date": "2026-09-10",
+                "Planned End Date": "2026-09-20",
+                "Actual Start Date": "2026-09-10",
+                "Actual End Date": "",
+                "Completion %": "50",
+                "Dependency": "TASK-001",
+                "Remarks": "",
+                "ETC": "5 days"
+              }
+            ]}
+            sampleFilename="tasks_import_template.xlsx"
+            onImportSuccess={() => {
+              queryClient.invalidateQueries({ queryKey: getListTasksQueryKey() });
+            }}
+            additionalData={{
+              userId: user?.id,
+              teamId: user?.teamId
+            }}
+          />
           <Dialog open={isCreateOpen} onOpenChange={(open) => {
             if (open) {
               form.reset();

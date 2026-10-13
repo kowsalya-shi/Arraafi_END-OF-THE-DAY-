@@ -8,11 +8,30 @@ import {
   internalTasksTable,
   dailyWorkTable,
   trainingRecordsTable,
+  systemSettingsTable,
 } from "@workspace/db";
 import { and, desc, eq, gte, inArray, isNull } from "drizzle-orm";
 import nodemailer from "nodemailer";
 import { logger } from "../lib/logger";
 import { sessions } from "./auth";
+import { areEmailAlertsEnabled } from "./notificationSettings";
+
+/**
+ * Check if global email system is enabled (CEO control)
+ */
+async function isGlobalEmailEnabled(): Promise<boolean> {
+  try {
+    const [setting] = await db
+      .select()
+      .from(systemSettingsTable)
+      .where(eq(systemSettingsTable.settingKey, "global_email_enabled"));
+    
+    return setting?.settingValue === "true";
+  } catch (err) {
+    logger.error({ err }, "Failed to check global email setting");
+    return true; // Default to enabled if check fails
+  }
+}
 
 const router = Router();
 const ALERT_EMAIL_OVERRIDES: Record<string, string> = {
@@ -41,6 +60,64 @@ function getTransporter() {
   }
   // Ethereal test account fallback for dev
   return null;
+}
+
+/**
+ * Send email only if the recipient has email alerts enabled
+ * Returns true if sent, false if skipped or failed
+ */
+async function sendEmailIfEnabled(
+  transporter: nodemailer.Transporter | null,
+  recipientUserIds: number[],
+  mailOptions: any
+): Promise<{ sent: boolean; skipped: number[]; recipients: string[] }> {
+  // First check if global email system is enabled (CEO control)
+  const globalEnabled = await isGlobalEmailEnabled();
+  if (!globalEnabled) {
+    logger.info({ subject: mailOptions.subject }, "Email blocked - global email system disabled by CEO");
+    return { sent: false, skipped: recipientUserIds, recipients: [] };
+  }
+
+  if (!transporter) {
+    logger.info({ mailOptions }, "DEV: Would send email");
+    return { sent: true, skipped: [], recipients: [] };
+  }
+
+  // Check email alert settings for all recipients
+  const enabledRecipients: number[] = [];
+  const skippedRecipients: number[] = [];
+
+  for (const userId of recipientUserIds) {
+    const alertsEnabled = await areEmailAlertsEnabled(userId);
+    if (alertsEnabled) {
+      enabledRecipients.push(userId);
+    } else {
+      skippedRecipients.push(userId);
+    }
+  }
+
+  // If all recipients have email alerts disabled, skip sending
+  if (enabledRecipients.length === 0) {
+    logger.info({ 
+      skipped: skippedRecipients.length,
+      subject: mailOptions.subject 
+    }, "Email not sent - all recipients have email alerts disabled");
+    return { sent: false, skipped: skippedRecipients, recipients: [] };
+  }
+
+  // Send email
+  try {
+    await transporter.sendMail(mailOptions);
+    logger.info({
+      sent: enabledRecipients.length,
+      skipped: skippedRecipients.length,
+      subject: mailOptions.subject
+    }, "Email sent successfully");
+    return { sent: true, skipped: skippedRecipients, recipients: mailOptions.to.split(", ") };
+  } catch (err) {
+    logger.error({ err, mailOptions }, "Failed to send email");
+    return { sent: false, skipped: skippedRecipients, recipients: [] };
+  }
 }
 
 async function getPendingEmployees(date: string, teamId?: number) {
@@ -258,23 +335,19 @@ async function emailMissingEodToLeadership(
     <br/><p>Regards,<br/>Arraafi Task Management Portal</p>`;
     
   const transporter = getTransporter();
-  if (!transporter) {
-    logger.info({ to: emails, subject, userId: user.id }, "DEV: Would send missing EOD leadership email");
-    return { sent: true, recipients: emails };
-  }
-
-  try {
-    await transporter.sendMail({
+  
+  const result = await sendEmailIfEnabled(
+    transporter,
+    recipientIds,
+    {
       from: `"Arraafi Task Management Portal" <${process.env.SMTP_USER ?? "noreply@arraafiinfotech.com"}>`,
       to: emails.join(", "),
       subject,
       html,
-    });
-    return { sent: true, recipients: emails };
-  } catch (err) {
-    logger.error({ err, userId: user.id, to: emails }, "Failed to send missing EOD leadership email");
-    return { sent: false, recipients: emails };
-  }
+    }
+  );
+  
+  return { sent: result.sent, recipients: result.recipients }
 }
 
 async function sendAgeingTaskEmail(
@@ -361,24 +434,23 @@ async function sendAgeingTaskEmail(
   </div>`;
     
   const transporter = getTransporter();
-  if (!transporter) {
-    logger.info({ to: emails, subject, taskId: task.id }, "DEV: Would send ageing task email");
-    return true;
-  }
-
-  try {
-    await transporter.sendMail({
+  
+  const result = await sendEmailIfEnabled(
+    transporter,
+    recipientIds,
+    {
       from: `"Arraafi EOD System" <${process.env.SMTP_USER ?? "eod_reports@arraafiinfotech.com"}>`,
       to: emails.join(", "),
       subject,
       html,
-    });
+    }
+  );
+  
+  if (result.sent) {
     logger.info({ to: emails, taskId: task.id, ageDays }, "Sent ageing task escalation email");
-    return true;
-  } catch (err) {
-    logger.error({ err, taskId: task.id, to: emails }, "Failed to send ageing task email");
-    return false;
   }
+  
+  return result.sent;
 }
 
 export async function processAgeingTaskNotifications(targetDate: string) {
@@ -575,30 +647,32 @@ export async function processMissingEodNotifications(targetDate: string) {
     
     if (escalationEmails.length > 0) {
       const transporter = getTransporter();
-      if (transporter) {
-        try {
-          await transporter.sendMail({
-            from: `"Arraafi Task Management Portal" <${process.env.SMTP_USER ?? "noreply@arraafiinfotech.com"}>`,
-            to: escalationEmails.join(", "),
-            subject: `[ESCALATION] ${user.name} - ${missedCount} EOD Reports Missing`,
-            html: `<div style="font-family: Arial, sans-serif; max-width: 600px;">
-              <h2 style="color: #dc2626;">⚠️ EOD Escalation Alert</h2>
-              <p><strong>${user.name}</strong> (${roleLabel}) has missed <strong>${missedCount} EOD submissions</strong> in the past 30 days.</p>
-              ${team ? `<p>Team: <strong>${team.name}</strong></p>` : ''}
-              <div style="background: #fef2f2; border-left: 4px solid #dc2626; padding: 15px; margin: 20px 0;">
-                <p style="margin: 0; font-weight: bold;">Recent Missed Dates:</p>
-                <ul style="margin: 10px 0;">
-                  ${missedDates.map(d => `<li>${d}</li>`).join('')}
-                </ul>
-              </div>
-              <p><strong>Action Required:</strong> Please follow up with ${user.name} urgently regarding their EOD submission compliance.</p>
-              <br/><p>Regards,<br/><strong>Arraafi Task Management Portal</strong></p>
-            </div>`,
-          });
-          emailsSent++;
-        } catch (err) {
-          logger.error({ err, userId: user.id }, "Failed to send escalation email");
+      
+      const result = await sendEmailIfEnabled(
+        transporter,
+        escalationRecipientIds,
+        {
+          from: `"Arraafi Task Management Portal" <${process.env.SMTP_USER ?? "noreply@arraafiinfotech.com"}>`,
+          to: escalationEmails.join(", "),
+          subject: `[ESCALATION] ${user.name} - ${missedCount} EOD Reports Missing`,
+          html: `<div style="font-family: Arial, sans-serif; max-width: 600px;">
+            <h2 style="color: #dc2626;">⚠️ EOD Escalation Alert</h2>
+            <p><strong>${user.name}</strong> (${roleLabel}) has missed <strong>${missedCount} EOD submissions</strong> in the past 30 days.</p>
+            ${team ? `<p>Team: <strong>${team.name}</strong></p>` : ''}
+            <div style="background: #fef2f2; border-left: 4px solid #dc2626; padding: 15px; margin: 20px 0;">
+              <p style="margin: 0; font-weight: bold;">Recent Missed Dates:</p>
+              <ul style="margin: 10px 0;">
+                ${missedDates.map(d => `<li>${d}</li>`).join('')}
+              </ul>
+            </div>
+            <p><strong>Action Required:</strong> Please follow up with ${user.name} urgently regarding their EOD submission compliance.</p>
+            <br/><p>Regards,<br/><strong>Arraafi Task Management Portal</strong></p>
+          </div>`,
         }
+      );
+      
+      if (result.sent) {
+        emailsSent++;
       }
     }
   }
@@ -769,26 +843,25 @@ router.post("/notifications/send-reminder", async (req, res) => {
 
     for (const emp of pending) {
       logger.info({ empId: emp.id, email: emp.email }, "Sending reminder");
-      if (transporter) {
-        try {
-          await transporter.sendMail({
-            from: `"Arraafi EOD System" <${process.env.SMTP_USER ?? "noreply@arraafiinfotech.com"}>`,
-            to: emp.email,
-            subject: "EOD Reminder - Please submit your EOD",
-            html: `<p>Dear ${emp.name},</p>
-                   <p>This is a reminder to submit your End of Day (EOD) report before <strong>5:45 PM</strong> today (${targetDate}).</p>
-                   <p>Please log in to the EOD portal and submit your report.</p>
-                   <br/><p>Regards,<br/>Arraafi Infotech HR Team</p>`,
-          });
-          sent++;
-        } catch (err) {
-          logger.error({ err, empId: emp.id }, "Failed to send reminder");
-          failed++;
+      
+      const result = await sendEmailIfEnabled(
+        transporter,
+        [emp.id],
+        {
+          from: `"Arraafi EOD System" <${process.env.SMTP_USER ?? "noreply@arraafiinfotech.com"}>`,
+          to: emp.email,
+          subject: "EOD Reminder - Please submit your EOD",
+          html: `<p>Dear ${emp.name},</p>
+                 <p>This is a reminder to submit your End of Day (EOD) report before <strong>5:45 PM</strong> today (${targetDate}).</p>
+                 <p>Please log in to the EOD portal and submit your report.</p>
+                 <br/><p>Regards,<br/>Arraafi Infotech HR Team</p>`,
         }
-      } else {
-        // Log the email in dev mode
-        logger.info({ to: emp.email, subject: "EOD Reminder" }, "DEV: Would send reminder email");
+      );
+      
+      if (result.sent) {
         sent++;
+      } else {
+        failed++;
       }
     }
 

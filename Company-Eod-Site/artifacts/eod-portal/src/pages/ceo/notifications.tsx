@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Bell, AlertTriangle, Mail, Users } from "lucide-react";
 import { PortalNotifications } from "@/components/portal-notifications";
+import { Link } from "wouter";
 import { AttendanceBadge } from "@/components/ui/status-badge";
 
 export default function HRNotifications() {
@@ -76,7 +77,12 @@ export default function HRNotifications() {
             CEO Portal
           </span>
         </div>
-        <h1 className="text-2xl font-bold text-gray-900">Notifications</h1>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h1 className="text-2xl font-bold text-gray-900">Notifications</h1>
+          <Link href="/ceo/notification-settings" className="text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline">
+            Email Alert Settings
+          </Link>
+        </div>
         <p className="text-gray-500 mt-1">
           Employees can submit EOD until 9:00 PM. Portal escalation begins after the deadline.
         </p>

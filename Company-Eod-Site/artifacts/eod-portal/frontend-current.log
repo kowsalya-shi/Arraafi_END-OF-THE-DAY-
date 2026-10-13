@@ -1,0 +1,9 @@
+10:56:57 am [vite] (client) Forced re-optimization of dependencies
+
+  VITE v7.3.3  ready in 1337 ms
+
+  ➜  Local:   http://localhost:23881/
+  ➜  Network: http://192.168.14.235:23881/
+  ➜  press h + enter to show help
+[RUNTIME_ERROR]{"type":"runtime-error","timestamp":1791869267633,"name":"Error","message":"Class extends value undefined is not a constructor or null","stack":"    at C:/Users/Shiny/Company-Eod-Site/Company-Eod-Site/artifacts/eod-portal/src/main.tsx:10:35","loc":{"line":10,"column":35,"file":"C:/Users/Shiny/Company-Eod-Site/Company-Eod-Site/artifacts/eod-portal/src/main.tsx"},"frame":"8  |  setAuthTokenGetter(() => localStorage.getItem(\"auth_token\"));\n9  |  \n10 |  class PortalErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {\n   |                                    ^\n11 |    state = { error: null as Error | null };\n12 |  "}
+10:58:26 am [vite] (client) hmr update /src/main.tsx, /src/index.css
